@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOSFET 運作原理模擬 - 完整版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { touch-action: none; }
+        /* Toggle Switch Style */
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: #2563eb;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: #2563eb;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 h-screen flex flex-col overflow-hidden">
+
+    <!-- Header -->
+    <header class="bg-blue-700 text-white p-4 shadow-md flex justify-between items-center shrink-0">
+        <div>
+            <h1 class="text-xl font-bold">MOSFET 物理模擬器 <span class="text-yellow-300 text-sm ml-2">v3.0</span></h1>
+            <p class="text-xs opacity-80">含 CLM 效應與完整特性曲線 ($I_D, r_o, g_m$)</p>
+        </div>
+        <div class="text-sm bg-blue-800 px-3 py-1 rounded">
+            狀態: <span id="region-badge" class="font-bold text-yellow-300">Cutoff</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        
+        <!-- Left Panel: Visualization & Controls -->
+        <div class="flex-1 flex flex-col p-4 gap-4 overflow-y-auto lg:overflow-hidden relative">
+            
+            <!-- Visualization Canvas Container -->
+            <div class="relative bg-white rounded-lg shadow-lg border border-slate-200 flex-1 min-h-[300px] flex flex-col">
+                <div class="absolute top-2 left-2 z-10 bg-white/90 p-2 rounded shadow text-xs pointer-events-none">
+                    <div class="font-bold text-slate-600 mb-1">物理視圖</div>
+                    <div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-blue-500"></div> 電子 (n-channel)</div>
+                    <div class="flex items-center gap-2 mt-1"><span class="font-bold text-red-500 w-3 text-center">+</span> 閘極電荷</div>
+                    <div class="flex items-center gap-2"><span class="font-bold text-blue-600 w-3 text-center">-</span> 感應電荷</div>
+                    <!-- CLM Legend -->
+                    <div id="clm-legend" class="hidden mt-2 pt-2 border-t border-slate-200">
+                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-red-200 border border-red-400"></div> CLM 空乏擴展區</div>
+                        <div class="text-[10px] text-slate-500 mt-1">有效長度 Leff 縮短</div>
+                    </div>
+                </div>
+                <canvas id="mosfetCanvas" class="w-full h-full cursor-crosshair"></canvas>
+            </div>
+
+            <!-- Controls -->
+            <div class="bg-white p-4 rounded-lg shadow border border-slate-200 shrink-0">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Vgs Control -->
+                    <div>
+                        <div class="flex justify-between mb-1">
+                            <label for="vgs" class="font-semibold text-sm">Gate (V<sub>GS</sub>)</label>
+                            <span class="font-mono text-blue-600 font-bold" id="vgs-val">0.0 V</span>
+                        </div>
+                        <input type="range" id="vgs" min="0" max="5" step="0.1" value="0" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                        <div class="text-xs text-slate-500 mt-1">V<sub>TH</sub> = 1.0V</div>
+                    </div>
+
+                    <!-- Vds Control -->
+                    <div>
+                        <div class="flex justify-between mb-1">
+                            <label for="vds" class="font-semibold text-sm">Drain (V<sub>DS</sub>)</label>
+                            <span class="font-mono text-red-600 font-bold" id="vds-val">0.0 V</span>
+                        </div>
+                        <input type="range" id="vds" min="0" max="5" step="0.1" value="0" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-red-600">
+                    </div>
+
+                    <!-- Lambda Control -->
+                    <div class="bg-slate-50 p-2 rounded border border-slate-200">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="font-semibold text-sm text-purple-700">CLM 效應 (λ)</label>
+                            <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="toggle" id="clm-toggle" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer border-slate-300"/>
+                                <label for="clm-toggle" class="toggle-label block overflow-hidden h-5 rounded-full bg-slate-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+                        
+                        <div class="opacity-50 transition-opacity duration-300" id="lambda-control-group">
+                            <div class="flex justify-between mb-1">
+                                <span class="text-xs font-mono">λ (Lambda)</span>
+                                <span class="font-mono text-purple-600 font-bold text-xs" id="lambda-val">0.00 V⁻¹</span>
+                            </div>
+                            <input type="range" id="lambda" min="0" max="0.5" step="0.05" value="0.1" disabled class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-purple-600">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Data & Theory -->
+        <div class="w-full lg:w-96 bg-white border-l border-slate-200 flex flex-col shadow-xl z-20 overflow-y-auto">
+            
+            <!-- Graphs Container -->
+            <div class="flex flex-col">
+                
+                <!-- Graph 1: ID vs VDS (Output) -->
+                <div class="p-3 border-b border-slate-100 h-48 shrink-0 bg-slate-50 relative">
+                    <div class="text-xs font-bold text-slate-700 mb-1 flex justify-between">
+                        <span>1. 輸出特性: I<sub>D</sub> vs V<sub>DS</sub></span>
+                        <span class="text-purple-600" id="ro-label"></span>
+                    </div>
+                    <canvas id="graphCanvas1" class="w-full h-full bg-white rounded border border-slate-200"></canvas>
+                </div>
+
+                <!-- Graph 2: ID vs VGS (Transfer) -->
+                <div class="p-3 border-b border-slate-100 h-40 shrink-0 bg-slate-50">
+                    <div class="text-xs font-bold text-slate-700 mb-1">2. 轉移特性: I<sub>D</sub> vs V<sub>GS</sub></div>
+                    <canvas id="graphCanvas2" class="w-full h-full bg-white rounded border border-slate-200"></canvas>
+                </div>
+
+                <!-- Graph 3: gm vs VGS (Transconductance) -->
+                <div class="p-3 border-b border-slate-100 h-40 shrink-0 bg-slate-50">
+                    <div class="text-xs font-bold text-slate-700 mb-1">3. 轉導特性: g<sub>m</sub> vs V<sub>GS</sub></div>
+                    <canvas id="graphCanvas3" class="w-full h-full bg-white rounded border border-slate-200"></canvas>
+                </div>
+            </div>
+
+            <!-- Theory Section -->
+            <div class="p-5 flex-1 space-y-4">
+                
+                <!-- Current Parameters Grid (2x2) -->
+                <div class="grid grid-cols-2 gap-3 p-3 bg-slate-100 rounded border border-slate-200">
+                    <div>
+                        <div class="text-[10px] text-slate-500 uppercase">Drain Current</div>
+                        <div class="text-base font-mono font-bold text-slate-800">I<sub>D</sub> = <span id="id-val">0.00</span> mA</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-slate-500 uppercase">Transconductance</div>
+                        <div class="text-base font-mono font-bold text-orange-600">g<sub>m</sub> = <span id="gm-val">0.00</span> mS</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-slate-500 uppercase">Output Resistance</div>
+                        <div class="text-base font-mono font-bold text-purple-700">r<sub>o</sub> = <span id="ro-val">∞</span> kΩ</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-slate-500 uppercase">Overdrive</div>
+                        <div class="text-base font-mono font-bold text-slate-600">V<sub>OV</sub> = <span id="vov-val">0.00</span> V</div>
+                    </div>
+                </div>
+
+                <!-- Explanation Cards -->
+                <div id="info-cutoff" class="hidden">
+                    <h3 class="font-bold text-red-600 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        截止區 (Cutoff)
+                    </h3>
+                    <p class="text-xs text-slate-600 mt-2">
+                        I<sub>D</sub> = 0。通道未形成。
+                    </p>
+                </div>
+
+                <div id="info-triode" class="hidden">
+                    <h3 class="font-bold text-green-600 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        三極區 (Triode)
+                    </h3>
+                    <p class="text-xs text-slate-600 mt-2">
+                        通道完全連通，電阻性行為。<br>
+                        g<sub>m</sub> 與 V<sub>DS</sub> 成正比。
+                    </p>
+                </div>
+
+                <div id="info-saturation" class="hidden">
+                    <h3 class="font-bold text-blue-600 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                        飽和區 (Saturation)
+                    </h3>
+                    <p class="text-xs text-slate-600 mt-2 mb-2">
+                        發生夾止 (Pinch-off)，電流趨於恆定。<br>
+                        g<sub>m</sub> 與 V<sub>OV</sub> 成正比 (放大器設計關鍵)。
+                    </p>
+                    <div id="clm-info" class="hidden bg-purple-50 p-2 rounded border border-purple-200 text-xs mt-2">
+                        <span class="font-bold text-purple-700">⚡ CLM 效應運作中:</span><br>
+                        V<sub>DS</sub> 增加導致 I<sub>D</sub> 微幅上升。<br>
+                        g<sub>m</sub> 也會因電流增加而些微提升。
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // Physics Parameters
+            const Vth = 1.0;
+            const K = 1.0; 
+            
+            let Vgs = 0.0;
+            let Vds = 0.0;
+            let Lambda = 0.0; // Channel Length Modulation parameter
+            let UseCLM = false;
+
+            let Id = 0.0;
+            let Ro = Infinity; // Output Resistance
+            let Gm = 0.0;      // Transconductance
+            let Vov = 0.0;
+            let mode = 'cutoff'; 
+            let animationFrameId;
+
+            // DOM Elements
+            const canvas = document.getElementById('mosfetCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            const g1Canvas = document.getElementById('graphCanvas1');
+            const g1Ctx = g1Canvas.getContext('2d');
+            const g2Canvas = document.getElementById('graphCanvas2');
+            const g2Ctx = g2Canvas.getContext('2d');
+            const g3Canvas = document.getElementById('graphCanvas3');
+            const g3Ctx = g3Canvas.getContext('2d');
+            
+            const vgsInput = document.getElementById('vgs');
+            const vdsInput = document.getElementById('vds');
+            const lambdaInput = document.getElementById('lambda');
+            const clmToggle = document.getElementById('clm-toggle');
+            const lambdaControlGroup = document.getElementById('lambda-control-group');
+            const clmLegend = document.getElementById('clm-legend');
+            const clmInfo = document.getElementById('clm-info');
+
+            const vgsVal = document.getElementById('vgs-val');
+            const vdsVal = document.getElementById('vds-val');
+            const lambdaVal = document.getElementById('lambda-val');
+            
+            // Value Displays
+            const idVal = document.getElementById('id-val');
+            const roVal = document.getElementById('ro-val');
+            const gmVal = document.getElementById('gm-val');
+            const vovVal = document.getElementById('vov-val');
+            const regionBadge = document.getElementById('region-badge');
+            
+            const infoCutoff = document.getElementById('info-cutoff');
+            const infoTriode = document.getElementById('info-triode');
+            const infoSaturation = document.getElementById('info-saturation');
+
+            // Animation Particles
+            let electrons = [];
+            const numElectrons = 60;
+
+            function init() {
+                vgsInput.oninput = updatePhysics;
+                vdsInput.oninput = updatePhysics;
+                lambdaInput.oninput = updatePhysics;
+                
+                clmToggle.onchange = function() {
+                    UseCLM = this.checked;
+                    lambdaInput.disabled = !UseCLM;
+                    if(UseCLM) {
+                        lambdaControlGroup.classList.remove('opacity-50');
+                        clmLegend.classList.remove('hidden');
+                    } else {
+                        lambdaControlGroup.classList.add('opacity-50');
+                        clmLegend.classList.add('hidden');
+                    }
+                    updatePhysics();
+                };
+
+                window.addEventListener('resize', resizeCanvas);
+                resizeCanvas();
+
+                for(let i=0; i<numElectrons; i++) {
+                    electrons.push({
+                        x: Math.random(), 
+                        y: Math.random(), 
+                        speedOffset: Math.random() * 0.2 + 0.9
+                    });
+                }
+
+                updatePhysics();
+                if (animationFrameId) cancelAnimationFrame(animationFrameId);
+                animate();
+            }
+
+            function resizeCanvas() {
+                if (!canvas) return;
+                const resize = (c) => {
+                    if(!c) return;
+                    const p = c.parentElement;
+                    c.width = p.clientWidth;
+                    c.height = p.clientHeight;
+                };
+                resize(canvas);
+                resize(g1Canvas);
+                resize(g2Canvas);
+                resize(g3Canvas);
+            }
+
+            function calculateMosfet(vgs, vds, lambda, enableClm) {
+                const vov = Math.max(0, vgs - Vth);
+                let i_d = 0;
+                let r_o = Infinity;
+                let g_m = 0;
+                let currentMode = 'cutoff';
+
+                if (vgs < Vth) {
+                    currentMode = 'cutoff';
+                    i_d = 0;
+                    g_m = 0;
+                } else if (vds < vov) {
+                    currentMode = 'triode';
+                    // Triode
+                    i_d = K * ( (vov * vds) - (0.5 * vds * vds) );
+                    // gm = dId/dVgs = K * Vds
+                    g_m = K * vds;
+                    
+                    if (enableClm && lambda > 0) {
+                        i_d = i_d * (1 + lambda * vds);
+                        g_m = g_m * (1 + lambda * vds);
+                    }
+                } else {
+                    currentMode = 'saturation';
+                    // Saturation
+                    let clmFactor = 1;
+                    if (enableClm && lambda > 0) {
+                        clmFactor = (1 + lambda * vds);
+                        // ro calculation
+                        const slope = 0.5 * K * vov * vov * lambda;
+                        if (slope > 0) r_o = 1 / slope;
+                    }
+                    i_d = 0.5 * K * (vov * vov) * clmFactor;
+                    // gm = dId/dVgs = K * Vov * clmFactor
+                    g_m = K * vov * clmFactor;
+                }
+                return { id: i_d, ro: r_o, gm: g_m, mode: currentMode, vov: vov };
+            }
+
+            function updatePhysics() {
+                Vgs = parseFloat(vgsInput.value);
+                Vds = parseFloat(vdsInput.value);
+                Lambda = parseFloat(lambdaInput.value);
+
+                const result = calculateMosfet(Vgs, Vds, Lambda, UseCLM);
+                Id = result.id;
+                Ro = result.ro;
+                Gm = result.gm;
+                mode = result.mode;
+                Vov = result.vov;
+
+                // Update UI Text
+                if(vgsVal) vgsVal.innerHTML = Vgs.toFixed(1) + " V";
+                if(vdsVal) vdsVal.innerHTML = Vds.toFixed(1) + " V";
+                if(lambdaVal) lambdaVal.innerHTML = Lambda.toFixed(2) + " V⁻¹";
+                
+                if(idVal) idVal.innerHTML = Id.toFixed(2);
+                if(gmVal) gmVal.innerHTML = Gm.toFixed(2);
+                if(vovVal) vovVal.innerHTML = Vov.toFixed(2);
+                
+                if (Ro === Infinity || Ro > 9999) {
+                    roVal.innerHTML = "∞";
+                } else {
+                    roVal.innerHTML = Ro.toFixed(1);
+                }
+
+                // Info & Badges
+                if(infoCutoff) {
+                    infoCutoff.classList.add('hidden');
+                    infoTriode.classList.add('hidden');
+                    infoSaturation.classList.add('hidden');
+                    
+                    if (mode === 'cutoff') {
+                        regionBadge.textContent = 'Cutoff';
+                        regionBadge.className = 'font-bold text-red-300';
+                        infoCutoff.classList.remove('hidden');
+                    } else if (mode === 'triode') {
+                        regionBadge.textContent = 'Triode';
+                        regionBadge.className = 'font-bold text-green-300';
+                        infoTriode.classList.remove('hidden');
+                    } else {
+                        regionBadge.textContent = 'Saturation';
+                        regionBadge.className = 'font-bold text-blue-300';
+                        infoSaturation.classList.remove('hidden');
+                        
+                        if(UseCLM && Lambda > 0) {
+                            clmInfo.classList.remove('hidden');
+                        } else {
+                            clmInfo.classList.add('hidden');
+                        }
+                    }
+                }
+            }
+
+            function animate() {
+                drawMosfet();
+                drawGraphs();
+                animationFrameId = requestAnimationFrame(animate);
+            }
+
+            // --- Visualization ---
+            function drawMosfet() {
+                if (!ctx) return;
+                const w = canvas.width;
+                const h = canvas.height;
+                ctx.clearRect(0, 0, w, h);
+
+                const groundY = h * 0.7;
+                const oxideY = h * 0.45;
+                const gateY = h * 0.35;
+                const sourceX = w * 0.15;
+                const sourceW = w * 0.2;
+                const drainW = w * 0.2;
+                const drainX = w * 0.65;
+                const channelStartX = sourceX + sourceW;
+                const channelEndX = drainX;
+                const channelWidth = channelEndX - channelStartX;
+
+                // Substrate
+                ctx.fillStyle = '#ffe4e1'; 
+                ctx.fillRect(0, oxideY, w, h - oxideY);
+                ctx.fillStyle = '#dcaaaaaa';
+                ctx.font = '14px sans-serif';
+                ctx.fillText("p-type Substrate", w*0.02, h*0.95);
+
+                // Source/Drain
+                ctx.fillStyle = '#90cdf4'; 
+                ctx.fillRect(sourceX, oxideY, sourceW, groundY - oxideY);
+                ctx.fillRect(drainX, oxideY, drainW, groundY - oxideY);
+
+                // Oxide
+                ctx.fillStyle = '#cbd5e0'; 
+                ctx.fillRect(sourceX, gateY, drainX + drainW - sourceX, oxideY - gateY);
+                // Field Lines
+                if (Vgs > 0) {
+                    const alpha = Math.min(1, Vgs / 3);
+                    ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`; 
+                    ctx.lineWidth = 1;
+                    const numLines = 15;
+                    const stepL = (drainX + drainW - sourceX) / numLines;
+                    for(let i=1; i<numLines; i++){
+                         const lx = sourceX + i * stepL;
+                         ctx.beginPath(); ctx.moveTo(lx, gateY); ctx.lineTo(lx, oxideY); ctx.stroke();
+                    }
+                }
+                
+                // Gate
+                ctx.fillStyle = '#4a5568';
+                ctx.fillRect(sourceX, gateY - 10, drainX + drainW - sourceX, 10);
+                // Gate Charge
+                if (Vgs > 0.1) {
+                    ctx.fillStyle = '#ef4444'; 
+                    ctx.font = 'bold 14px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    const numPlus = Math.min(20, Math.floor(Vgs * 3) + 3); 
+                    const stepX = (drainX + drainW - sourceX) / (numPlus + 1);
+                    for (let i = 1; i <= numPlus; i++) {
+                        ctx.fillText("+", sourceX + i * stepX, gateY - 15);
+                    }
+                }
+
+                // Wires
+                ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(sourceX + sourceW/2, oxideY); ctx.lineTo(sourceX + sourceW/2, oxideY - 50); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(drainX + drainW/2, oxideY); ctx.lineTo(drainX + drainW/2, oxideY - 50); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(w/2, gateY-10); ctx.lineTo(w/2, gateY - 50); ctx.stroke();
+
+                // Channel & Pinch-off Calculation
+                if (Vgs >= Vth) {
+                    const maxChannelDepth = 20; 
+                    const depthSource = Math.min(1, (Vgs - Vth) / 2) * maxChannelDepth;
+                    let depthDrain = Math.min(1, (Vgs - Vds - Vth) / 2) * maxChannelDepth;
+                    
+                    let effectiveChannelEndX = channelEndX;
+                    
+                    if (depthDrain < 0) {
+                        depthDrain = 0; 
+                        if (UseCLM && Lambda > 0 && Vds > Vov) {
+                            const pinchMove = Math.min(channelWidth * 0.4, (Vds - Vov) * 20 * Lambda);
+                            effectiveChannelEndX = channelEndX - pinchMove;
+                        }
+                    }
+
+                    // 1. Draw Depletion
+                    if (effectiveChannelEndX < channelEndX) {
+                        ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; 
+                        ctx.beginPath();
+                        ctx.moveTo(effectiveChannelEndX, oxideY);
+                        ctx.lineTo(channelEndX, oxideY);
+                        ctx.lineTo(channelEndX, oxideY + 25); 
+                        ctx.lineTo(effectiveChannelEndX, oxideY + 5); 
+                        ctx.fill();
+                        
+                        ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+                        ctx.setLineDash([2, 2]);
+                        ctx.beginPath();
+                        ctx.moveTo(effectiveChannelEndX, oxideY);
+                        ctx.lineTo(effectiveChannelEndX, oxideY + 20);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+
+                    // 2. Draw Active Channel
+                    ctx.fillStyle = '#bfdbfe'; 
+                    ctx.beginPath();
+                    ctx.moveTo(channelStartX, oxideY);
+                    ctx.lineTo(effectiveChannelEndX, oxideY); 
+                    ctx.lineTo(effectiveChannelEndX, oxideY + depthDrain);
+                    ctx.lineTo(channelStartX, oxideY + depthSource);
+                    ctx.fill();
+                    
+                    // 3. Induced Charge (-)
+                    ctx.fillStyle = '#2563eb'; 
+                    ctx.font = 'bold 12px monospace';
+                    ctx.textBaseline = 'middle';
+                    const numMinus = Math.min(20, Math.floor(Vgs * 3) + 3);
+                    const activeWidth = effectiveChannelEndX - channelStartX;
+                    const stepX = activeWidth / (numMinus + 1);
+
+                    for (let i = 1; i <= numMinus; i++) {
+                        const x = channelStartX + i * stepX;
+                        const ratio = (x - channelStartX) / activeWidth;
+                        const localDepth = depthSource - (depthSource - depthDrain) * ratio;
+                        if (localDepth > 2) ctx.fillText("-", x, oxideY + 8);
+                    }
+
+                    // 4. Electrons
+                    if (Vds > 0 && Id > 0) {
+                        const speed = (Id / 2) + 0.5; 
+                        ctx.fillStyle = '#ffffff'; 
+                        electrons.forEach(p => {
+                            p.x += 0.01 * p.speedOffset * speed;
+                            if (p.x > 1) p.x = 0;
+                            const px = channelStartX + p.x * channelWidth;
+                            const effectivePinchRatio = (effectiveChannelEndX - channelStartX) / channelWidth;
+                            
+                            let py = oxideY;
+                            if (p.x <= effectivePinchRatio) {
+                                const ratio = p.x / effectivePinchRatio;
+                                const currentDepth = depthSource - (depthSource - depthDrain) * ratio;
+                                py = oxideY + p.y * currentDepth;
+                                if (currentDepth > 0.5) {
+                                    ctx.beginPath(); ctx.arc(px, py, 1.5, 0, Math.PI * 2); ctx.fill();
+                                }
+                            } else {
+                                py = oxideY + p.y * 2; 
+                                ctx.beginPath(); ctx.arc(px, py, 1.5, 0, Math.PI * 2); ctx.fill();
+                            }
+                        });
+                    }
+                } else {
+                    ctx.fillStyle = '#e53e3e'; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'center';
+                    if (Vgs > 0.1) ctx.fillText("Depletion", w/2, oxideY + 25);
+                    else ctx.fillText("Off", w/2, oxideY + 25);
+                }
+            }
+
+            function drawGenericGraph(ctx, canvas, config) {
+                if (!ctx) return;
+                const w = canvas.width;
+                const h = canvas.height;
+                ctx.clearRect(0, 0, w, h);
+
+                const padLeft = 35; const padBottom = 20;
+                const graphW = w - padLeft - 10; const graphH = h - padBottom - 10;
+
+                ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
+                ctx.beginPath();
+                for(let i=1; i<5; i++) {
+                    const y = h - padBottom - (graphH * i / 5);
+                    ctx.moveTo(padLeft, y); ctx.lineTo(w-10, y);
+                }
+                ctx.stroke();
+
+                ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(padLeft, 10); ctx.lineTo(padLeft, h - padBottom); ctx.lineTo(w - 10, h - padBottom);
+                ctx.stroke();
+
+                ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif';
+                ctx.textAlign = 'right'; ctx.fillText(config.yLabel, padLeft - 5, 20);
+                ctx.textAlign = 'center'; ctx.fillText(config.xLabel, w - 20, h - 5);
+
+                ctx.beginPath(); ctx.strokeStyle = config.color; ctx.lineWidth = 2;
+                const steps = 60;
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps; 
+                    const xVal = t * config.xMax;
+                    const yVal = config.dataFunc(xVal);
+                    
+                    const xPx = padLeft + (xVal / config.xMax) * graphW;
+                    const yPx = (h - padBottom) - (yVal / config.yMax) * graphH;
+                    if (i===0) ctx.moveTo(xPx, yPx); else ctx.lineTo(xPx, yPx);
+                }
+                ctx.stroke();
+                
+                if (config.showSlope && UseCLM && Lambda > 0 && Vds > Vov && Vgs > Vth) {
+                     const currXPx = padLeft + (Vds / config.xMax) * graphW;
+                     const currYPx = (h - padBottom) - (Id / config.yMax) * graphH;
+                     
+                     ctx.strokeStyle = '#a855f7'; 
+                     ctx.setLineDash([4, 2]);
+                     ctx.beginPath();
+                     
+                     const backV = Vds - 1.5;
+                     const backI = calculateMosfet(Vgs, backV, Lambda, UseCLM).id;
+                     const backXPx = padLeft + (backV / config.xMax) * graphW;
+                     const backYPx = (h - padBottom) - (backI / config.yMax) * graphH;
+                     
+                     ctx.moveTo(backXPx, backYPx);
+                     ctx.lineTo(currXPx + (currXPx - backXPx)*0.5, currYPx + (currYPx - backYPx)*0.5); 
+                     ctx.stroke();
+                     ctx.setLineDash([]);
+                     
+                     ctx.fillStyle = '#a855f7'; ctx.font = 'bold 10px sans-serif';
+                     ctx.fillText("slope = 1/ro", currXPx - 30, currYPx - 10);
+                }
+
+                const currX = config.currentX;
+                const currY = config.currentY;
+                const cPx = padLeft + (currX / config.xMax) * graphW;
+                const cPy = (h - padBottom) - (currY / config.yMax) * graphH;
+
+                if (cPx <= w && cPy >= 0 && cPy <= h) {
+                    ctx.fillStyle = '#e11d48'; ctx.beginPath();
+                    ctx.arc(cPx, cPy, 4, 0, Math.PI * 2); ctx.fill();
+                }
+            }
+
+            function drawGraphs() {
+                const yMaxDynamic = 10 * (1 + Lambda * 3);
+                
+                drawGenericGraph(g1Ctx, g1Canvas, {
+                    xLabel: 'Vds (V)', yLabel: 'Id (mA)',
+                    xMax: 5, yMax: yMaxDynamic, 
+                    color: '#2563eb',
+                    currentX: Vds, currentY: Id,
+                    showSlope: true,
+                    dataFunc: (x) => calculateMosfet(Vgs, x, Lambda, UseCLM).id
+                });
+
+                drawGenericGraph(g2Ctx, g2Canvas, {
+                    xLabel: 'Vgs (V)', yLabel: 'Id (mA)',
+                    xMax: 5, yMax: yMaxDynamic,
+                    color: '#059669',
+                    currentX: Vgs, currentY: Id,
+                    dataFunc: (x) => calculateMosfet(x, Vds, Lambda, UseCLM).id
+                });
+
+                // 3. Transconductance: gm vs Vgs
+                drawGenericGraph(g3Ctx, g3Canvas, {
+                    xLabel: 'Vgs (V)', yLabel: 'gm (mS)',
+                    xMax: 5, yMax: 5 * (1 + Lambda * 3), 
+                    color: '#d97706',
+                    currentX: Vgs, currentY: Gm,
+                    dataFunc: (x) => calculateMosfet(x, Vds, Lambda, UseCLM).gm
+                });
+            }
+
+            init();
+        })();
+    </script>
+</body>
+</html>
